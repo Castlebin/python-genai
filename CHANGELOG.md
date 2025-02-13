@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.3.0](https://github.com/googleapis/python-genai/compare/v1.2.0...v1.3.0) (2025-02-13)
+
+
+### Features
+
+* Introduce response.executable_code and response.code_execution_result quick accessors for GenerateContentResponse class ([3725ddf](https://github.com/googleapis/python-genai/commit/3725ddf44a0df04f6fac0bd5295f45ed20b4a8fe))
+* Introduce UserContent and ModelContent to facilitate easier content creation ([c8cfef8](https://github.com/googleapis/python-genai/commit/c8cfef85ca1f7901e802800f580915a14340cae7))
+* Provide a public property for determining the module backend. ([8e561de](https://github.com/googleapis/python-genai/commit/8e561de04965bb8766db87ad8eea7c57c1040442))
+
+
+### Bug Fixes
+
+* Enable sending empty input to Live API as turn complete ([99a5510](https://github.com/googleapis/python-genai/commit/99a55100e1c4e91f53b22881fbff67e62f6fb99d))
+* Properly handle empty json response with headers for list models ([859ebc3](https://github.com/googleapis/python-genai/commit/859ebc3dc51aab9834b9034b5a1a205bcc72d25d))
+
+
+### Documentation
+
+* Add docs for error handling ([#317](https://github.com/googleapis/python-genai/issues/317)) ([6e1cb82](https://github.com/googleapis/python-genai/commit/6e1cb82704f6cb05b67191a319190c5ce0f67d9c))
+* Regenerate docs for 1.2.0 ([30a3493](https://github.com/googleapis/python-genai/commit/30a34931d200feb12da54e978ea1f4a4a3d1e82e))
+* Update docs for models modules ([d96bba2](https://github.com/googleapis/python-genai/commit/d96bba29326113dba46ff16932deeb50618b8d8c))
+
 ## [1.2.0](https://github.com/googleapis/python-genai/compare/v1.1.0...v1.2.0) (2025-02-12)
 
 
