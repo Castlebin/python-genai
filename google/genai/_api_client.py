@@ -25,15 +25,18 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Optional, Tuple, TypedDict, Union
+from typing import Any, Optional, Tuple, TypedDict, Union, cast
 from urllib.parse import urlparse, urlunparse
 import google.auth
 import google.auth.credentials
+from google.auth.credentials import Credentials
 from google.auth.transport.requests import AuthorizedSession
+from google.auth.transport.requests import Request
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 import requests
-from . import errors
 from . import _common
+from . import errors
 from . import version
 from .types import HttpOptions, HttpOptionsDict, HttpOptionsOrDict
 
@@ -93,6 +96,29 @@ def _join_url_path(base_url: str, path: str) -> str:
   return urlunparse(parsed_base._replace(path=base_path + '/' + path))
 
 
+def _load_auth(*, project: str | None) -> tuple[Credentials, str]:
+  credentials, loaded_project_id = google.auth.default(
+      scopes=['https://www.googleapis.com/auth/cloud-platform'],
+  )
+  credentials = cast(Any, credentials)
+  credentials.refresh(Request())
+
+  if not project:
+    project = loaded_project_id
+
+  if not project:
+    raise ValueError('Could not resolve project')
+
+  if not isinstance(project, str):
+    raise TypeError(f'Expected project to be a str but got {type(project)}')
+
+  return credentials, project
+
+
+def _refresh_auth(credentials: Credentials) -> None:
+  credentials.refresh(Request())
+
+
 @dataclass
 class HttpRequest:
   headers: dict[str, str]
@@ -126,15 +152,15 @@ class HttpResponse:
     self.headers = headers
     self.response_stream = response_stream
     self.byte_stream = byte_stream
-    self.segment_iterator = self.segments()
 
   # Async iterator for async streaming.
   def __aiter__(self):
+    self.segment_iterator = self.async_segments()
     return self
 
   async def __anext__(self):
     try:
-      return next(self.segment_iterator)
+      return await self.segment_iterator.__anext__()
     except StopIteration:
       raise StopAsyncIteration
 
@@ -160,6 +186,25 @@ class HttpResponse:
           if chunk.startswith(b'data: '):
             chunk = chunk[len(b'data: ') :]
           yield json.loads(str(chunk, 'utf-8'))
+
+  async def async_segments(self):
+    if isinstance(self.response_stream, list):
+      # list of objects retrieved from replay or from non-streaming API.
+      for chunk in self.response_stream:
+        yield json.loads(chunk) if chunk else {}
+    elif self.response_stream is None:
+      async for c in []:
+        yield c
+    else:
+      # Iterator of objects retrieved from the API.
+      async for chunk in self.response_stream.aiter_lines():
+        # This is httpx.Response.
+        if chunk:
+          # In async streaming mode, the chunk of JSON is prefixed with "data:" which
+          # we must strip before parsing.
+          if chunk.startswith('data: '):
+            chunk = chunk[len('data: ') :]
+          yield json.loads(chunk)
 
   def byte_segments(self):
     if isinstance(self.byte_stream, list):
@@ -304,6 +349,25 @@ class ApiClient:
     url_parts = urlparse(self._http_options['base_url'])
     return url_parts._replace(scheme='wss').geturl()
 
+  async def _async_access_token(self) -> str:
+
+    if not self._credentials:
+      self._credentials, project = await asyncio.to_thread(
+          _load_auth, project=self.project
+      )
+      if not self.project:
+        self.project = project
+
+    if self._credentials.expired or not self._credentials.token:
+      # Only refresh when it needs to. Default expiration is 3600 seconds.
+      await asyncio.to_thread(_refresh_auth, self._credentials)
+
+    if not self._credentials.token:
+      raise RuntimeError('Could not resolve API token from the environment')
+
+    assert isinstance(self._credentials.token, str)
+    return self._credentials.token
+
   def _build_request(
       self,
       http_method: str,
@@ -417,21 +481,35 @@ class ApiClient:
       self, http_request: HttpRequest, stream: bool = False
   ):
     if self.vertexai:
-      if not self._credentials:
-        self._credentials, _ = google.auth.default(
-            scopes=['https://www.googleapis.com/auth/cloud-platform'],
-        )
-      return await asyncio.to_thread(
-          self._request,
-          http_request,
+      http_request.headers['Authorization'] = (
+          f'Bearer {await self._async_access_token()}'
+      )
+    if stream:
+      httpx_request = httpx.Request(
+          method=http_request.method,
+          url=http_request.url,
+          data=json.dumps(http_request.data),
+          headers=http_request.headers,
+      )
+      aclient = httpx.AsyncClient()
+      response = await aclient.send(
+          httpx_request,
           stream=stream,
+      )
+      return HttpResponse(
+          response.headers, response if stream else [response.text]
       )
     else:
-      return await asyncio.to_thread(
-          self._request,
-          http_request,
-          stream=stream,
-      )
+      async with httpx.AsyncClient() as aclient:
+        response = await aclient.post(
+            http_request.url,
+            headers=http_request.headers,
+            data=json.dumps(http_request.data) if http_request.data else None,
+            timeout=http_request.timeout,
+        )
+        return HttpResponse(
+            response.headers, response if stream else [response.text]
+        )
 
   def get_read_only_http_options(self) -> HttpOptionsDict:
     copied = HttpOptionsDict()
